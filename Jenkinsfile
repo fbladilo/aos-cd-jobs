@@ -29,7 +29,7 @@ node {
                     commonlib.artToolsParam(),
                     string(
                         name: 'GROUP',
-                        description: 'The group to use with artcd release-from-fbc command',
+                        description: 'The group to use (e.g. mta-8.1, logging-6.5, or openshift-4.22 with OCP_OPTIONAL)',
                         defaultValue: "oadp-1.3",
                         trim: true,
                     ),
@@ -57,10 +57,33 @@ node {
                         defaultValue: "",
                         trim: true,
                     ),
+                    text(
+                        name: 'EXTRA_IMAGE_NVRS',
+                        description: 'Comma-separated list of extra image NVRs to include in the image shipment file (not part of the FBC). At least one of FBC_PULLSPECS or EXTRA_IMAGE_NVRS must be provided.',
+                        defaultValue: "",
+                        trim: true,
+                    ),
+                    booleanParam(
+                        name: 'OCP_OPTIONAL',
+                        description: 'Enable OCP optional-operator mode. Creates extras/fbc shipments with all FBC related images included. Use with GROUP=openshift-4.x.',
+                        defaultValue: false,
+                    ),
                     booleanParam(
                         name: 'FORCE',
                         description: 'Create a replacement shipment MR and update releases.yml. An open previous MR is made draft; replacement is refused if it was merged or production was attempted. Layered-product mode only.',
                         defaultValue: false,
+                    ),
+                    string(
+                        name: 'EXCLUDE_NVR_COMPONENTS',
+                        description: '(Optional) Comma-separated NVR component names to explicitly exclude from shipment. Not needed in the default workflow.',
+                        defaultValue: "",
+                        trim: true,
+                    ),
+                    string(
+                        name: 'RELEASE_JIRA',
+                        description: 'Optional JIRA ticket key or URL for the release request (e.g. OADP-1234 or https://redhat.atlassian.net/browse/OADP-1234). Will be referenced in the shipment MR and updated with the MR link.',
+                        defaultValue: "",
+                        trim: true,
                     ),
                     commonlib.enableTelemetryParam(),
                     commonlib.telemetryEndpointParam(),
@@ -77,92 +100,141 @@ node {
     sshagent(["openshift-bot"]) {
         stage("initialize") {
             currentBuild.displayName = "#${currentBuild.number} ${params.GROUP} ${params.ASSEMBLY}"
+            if (params.DRY_RUN) {
+                currentBuild.displayName += " [DRY_RUN]"
+            }
         }
 
-        stage("release-from-fbc") {
-            // artcd command
-            def cmd = [
-                "artcd",
-                "-v",
-                "--working-dir=./artcd_working",
-                "--config=./config/artcd.toml",
-                "release-from-fbc",
-                "--group",
-                "${params.GROUP}",
-                "--assembly",
-                "${params.ASSEMBLY}",
-                "--fbc-pullspecs",
-                "${commonlib.cleanCommaList(params.FBC_PULLSPECS)}",
-                "--create-mr"
-            ]
+        try {
+            stage("release-from-fbc") {
+                def fbcPullspecs = commonlib.cleanCommaList(params.FBC_PULLSPECS)
+                def extraImageNvrs = commonlib.cleanCommaList(params.EXTRA_IMAGE_NVRS)
 
-            if (params.FORCE) {
-                cmd << "--force"
-            }
+                if (!fbcPullspecs && !extraImageNvrs) {
+                    error("At least one of FBC_PULLSPECS or EXTRA_IMAGE_NVRS must be provided")
+                }
 
-            def jiraBugs = commonlib.cleanCommaList(params.JIRA_BUGS)
-            if (jiraBugs) {
-                cmd << "--jira-bugs"
-                cmd << "${jiraBugs}"
-            }
+                if (params.OCP_OPTIONAL && !params.GROUP.startsWith('openshift-')) {
+                    error("OCP_OPTIONAL requires GROUP to start with 'openshift-' (e.g., openshift-4.22). " +
+                          "Layered products (OADP, MTA, MTC, Logging) should use the default mode.")
+                }
 
-            def targetDate = params.TARGET_RELEASE_DATE?.trim()
-            if (targetDate) {
-                cmd << "--target-release-date"
-                cmd << "${targetDate}"
-            }
+                if (!params.OCP_OPTIONAL && params.GROUP.startsWith('openshift-')) {
+                    error("GROUP '${params.GROUP}' is an openshift-* group and requires OCP_OPTIONAL to be enabled. " +
+                          "Without it, the default mode may filter out images and produce only FBC yaml.")
+                }
 
-            if (params.DRY_RUN) {
-                cmd << "--dry-run"
-            }
+                def cmd = [
+                    "artcd",
+                    "-v",
+                    "--working-dir=./artcd_working",
+                    "--config=./config/artcd.toml",
+                ]
 
-            // Needed to detect manual builds
-            wrap([$class: 'BuildUser']) {
-                builderEmail = env.BUILD_USER_EMAIL
-            }
+                if (params.DRY_RUN) {
+                    cmd << "--dry-run"
+                }
 
-            buildlib.withAppCiAsArtPublish() {
-                withCredentials([
-                    string(credentialsId: 'jenkins-service-account', variable: 'JENKINS_SERVICE_ACCOUNT'),
-                    string(credentialsId: 'jenkins-service-account-token', variable: 'JENKINS_SERVICE_ACCOUNT_TOKEN'),
-                    file(credentialsId: 'openshift-bot-oadp-konflux-service-account', variable: 'OADP_KONFLUX_SA_KUBECONFIG'),
-                    file(credentialsId: 'openshift-bot-mta-konflux-service-account', variable: 'MTA_KONFLUX_SA_KUBECONFIG'),
-                    file(credentialsId: 'openshift-bot-mtc-konflux-service-account', variable: 'MTC_KONFLUX_SA_KUBECONFIG'),
-                    file(credentialsId: 'openshift-bot-logging-konflux-service-account', variable: 'LOGGING_KONFLUX_SA_KUBECONFIG'),
-                    string(credentialsId: 'art-bot-slack-token', variable: 'SLACK_BOT_TOKEN'),
-                    string(credentialsId: 'jboss-jira-token', variable: 'JIRA_TOKEN'),
-                    string(credentialsId: 'redis-server-password', variable: 'REDIS_SERVER_PASSWORD'),
-                    file(credentialsId: 'konflux-art-images-auth-file', variable: 'KONFLUX_ART_IMAGES_AUTH_FILE'),
-                    file(credentialsId: 'konflux-gcp-app-creds-prod', variable: 'GOOGLE_APPLICATION_CREDENTIALS'),
-                    string(credentialsId: 'art-bot-jenkins-gitlab', variable: 'GITLAB_TOKEN'),
-                ]){
-                    def envVars = ["BUILD_USER_EMAIL=${builderEmail?: ''}", "BUILD_URL=${BUILD_URL}", "JOB_NAME=${JOB_NAME}", 'DOOZER_DB_NAME=art_dash']
-                    if (params.TELEMETRY_ENABLED) {
-                        envVars << "TELEMETRY_ENABLED=1"
-                        if (params.OTEL_EXPORTER_OTLP_ENDPOINT && params.OTEL_EXPORTER_OTLP_ENDPOINT != "") {
-                            envVars << "OTEL_EXPORTER_OTLP_ENDPOINT=${params.OTEL_EXPORTER_OTLP_ENDPOINT}"
+                cmd += [
+                    "release-from-fbc",
+                    "--group",
+                    "${params.GROUP}",
+                    "--assembly",
+                    "${params.ASSEMBLY}",
+                    "--create-mr"
+                ]
+
+                if (params.FORCE) {
+                    cmd << "--force"
+                }
+
+                def releaseJira = params.RELEASE_JIRA?.trim()
+                if (releaseJira) {
+                    cmd << "--release-jira"
+                    cmd << "${releaseJira}"
+                }
+
+                if (fbcPullspecs) {
+                    cmd += ["--fbc-pullspecs", fbcPullspecs]
+                }
+                if (extraImageNvrs) {
+                    cmd += ["--extra-image-nvrs", extraImageNvrs]
+                }
+
+                def jiraBugs = commonlib.cleanCommaList(params.JIRA_BUGS)
+                if (jiraBugs) {
+                    cmd << "--jira-bugs"
+                    cmd << "${jiraBugs}"
+                }
+
+                def targetDate = params.TARGET_RELEASE_DATE?.trim()
+                if (targetDate) {
+                    cmd << "--target-release-date"
+                    cmd << "${targetDate}"
+                }
+
+                if (params.OCP_OPTIONAL) {
+                    cmd << "--ocp-optional"
+                }
+
+                def excludeNvrComponents = commonlib.cleanCommaList(params.EXCLUDE_NVR_COMPONENTS)
+                if (excludeNvrComponents) {
+                    cmd << "--exclude-nvr-components"
+                    cmd << "${excludeNvrComponents}"
+                }
+
+                // Needed to detect manual builds
+                wrap([$class: 'BuildUser']) {
+                    builderEmail = env.BUILD_USER_EMAIL
+                }
+
+                buildlib.withAppCiAsArtPublish() {
+                    withCredentials([
+                        string(credentialsId: 'jenkins-service-account', variable: 'JENKINS_SERVICE_ACCOUNT'),
+                        string(credentialsId: 'jenkins-service-account-token', variable: 'JENKINS_SERVICE_ACCOUNT_TOKEN'),
+                        file(credentialsId: 'konflux-bot-0-art-oadp-tenant-sa', variable: 'OADP_KONFLUX_SA_KUBECONFIG'),
+                        file(credentialsId: 'konflux-bot-0-art-mta-tenant-sa', variable: 'MTA_KONFLUX_SA_KUBECONFIG'),
+                        file(credentialsId: 'konflux-bot-0-art-mtc-tenant-sa', variable: 'MTC_KONFLUX_SA_KUBECONFIG'),
+                        file(credentialsId: 'konflux-bot-0-art-logging-tenant-sa', variable: 'LOGGING_KONFLUX_SA_KUBECONFIG'),
+                        file(credentialsId: 'konflux-bot-0-art-oap-tenant-sa', variable: 'OAP_KONFLUX_SA_KUBECONFIG'),
+                        file(credentialsId: 'konflux-bot-0-art-quay-tenant-sa', variable: 'QUAY_KONFLUX_SA_KUBECONFIG'),
+                        string(credentialsId: 'art-bot-slack-token', variable: 'SLACK_BOT_TOKEN'),
+                        string(credentialsId: 'jboss-jira-token', variable: 'JIRA_TOKEN'),
+                        string(credentialsId: 'redis-server-password', variable: 'REDIS_SERVER_PASSWORD'),
+                        file(credentialsId: 'quay-auth-file', variable: 'QUAY_AUTH_FILE'),
+                        file(credentialsId: 'konflux-gcp-app-creds-prod', variable: 'GOOGLE_APPLICATION_CREDENTIALS'),
+                        string(credentialsId: 'art-bot-jenkins-gitlab', variable: 'GITLAB_TOKEN'),
+                        string(credentialsId: 'openshift-art-build-bot-app-id', variable: 'GITHUB_APP_ID'),
+                        file(credentialsId: 'openshift-art-build-bot-private-key.pem', variable: 'GITHUB_APP_PRIVATE_KEY_PATH'),
+                    ]){
+                        def envVars = ["BUILD_USER_EMAIL=${builderEmail?: ''}", "BUILD_URL=${BUILD_URL}", "JOB_NAME=${JOB_NAME}", 'DOOZER_DB_NAME=art_dash']
+                        if (params.TELEMETRY_ENABLED) {
+                            envVars << "TELEMETRY_ENABLED=1"
+                            if (params.OTEL_EXPORTER_OTLP_ENDPOINT && params.OTEL_EXPORTER_OTLP_ENDPOINT != "") {
+                                envVars << "OTEL_EXPORTER_OTLP_ENDPOINT=${params.OTEL_EXPORTER_OTLP_ENDPOINT}"
+                            }
                         }
-                    }
-                    withEnv(envVars) {
-                        buildlib.init_artcd_working_dir()
-                        try {
-                            sh(script: cmd.join(' '), returnStdout: true)
-                        } catch (err) {
-                            // If any release creation failures occurred, mark the job run as unstable
-                            currentBuild.result = "UNSTABLE"
+                        withEnv(envVars) {
+                            buildlib.init_artcd_working_dir()
+                            try {
+                                sh(script: cmd.join(' '), returnStdout: true)
+                            } catch (err) {
+                                // If any release creation failures occurred, mark the job run as unstable
+                                currentBuild.result = "UNSTABLE"
+                            }
                         }
                     }
                 }
             }
-        }
-
-        stage("terminate") {
-            commonlib.safeArchiveArtifacts([
-                "artcd_working/**/*.log",
-                "artcd_working/**/*.yaml",
-                "artcd_working/**/*.yml",
-            ])
-            buildlib.cleanWorkspace()
+        } finally {
+            stage("terminate") {
+                commonlib.safeArchiveArtifacts([
+                    "artcd_working/**/*.log",
+                    "artcd_working/**/*.yaml",
+                    "artcd_working/**/*.yml",
+                ])
+                buildlib.cleanWorkspace()
+            }
         }
     }
     }
