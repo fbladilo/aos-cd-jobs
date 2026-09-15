@@ -57,6 +57,11 @@ node {
                         defaultValue: "",
                         trim: true,
                     ),
+                    booleanParam(
+                        name: 'FORCE',
+                        description: 'Create a replacement shipment MR and update releases.yml. An open previous MR is made draft; replacement is refused if it was merged or production was attempted. Layered-product mode only.',
+                        defaultValue: false,
+                    ),
                     commonlib.enableTelemetryParam(),
                     commonlib.telemetryEndpointParam(),
                 ]
@@ -90,6 +95,10 @@ node {
                 "${commonlib.cleanCommaList(params.FBC_PULLSPECS)}",
                 "--create-mr"
             ]
+
+            if (params.FORCE) {
+                cmd << "--force"
+            }
 
             def jiraBugs = commonlib.cleanCommaList(params.JIRA_BUGS)
             if (jiraBugs) {
