@@ -1,3 +1,4 @@
+timeout(time: 4, unit: 'HOURS') {
 node {
     checkout scm
     buildlib = load("pipeline-scripts/buildlib.groovy")
@@ -29,8 +30,8 @@ node {
             "schedule-ocp4-scan-konflux"
         ]
         for ( version in commonlib.ocpMajorVersions["4plus"] ) {
-            // Only build OCP versions >= 4.17 (includes 4.17+ and 5.0)
-            if (buildlib.cmp_version(version, "4.17") >= 0) {
+            // High priority: versions >= 4.19, excluding 4.23 (low priority for now)
+            if (buildlib.cmp_version(version, "4.19") >= 0 && version != "4.23") {
                 cmd << "--version=${version}"
             }
         }
@@ -59,4 +60,5 @@ node {
         }
 
     }
+}
 }

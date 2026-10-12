@@ -70,7 +70,12 @@ node {
                     ),
                     booleanParam(
                         name: 'FORCE',
-                        description: 'Create a replacement shipment MR and update releases.yml. An open previous MR is made draft; replacement is refused if it was merged or production was attempted. Layered-product mode only.',
+                        description: 'Create a replacement shipment MR and update releases.yml. An open previous MR is closed; replacement is refused if it was merged or production was attempted. Layered-product mode only.',
+                        defaultValue: false,
+                    ),
+                    booleanParam(
+                        name: 'REFRESH_FBCS',
+                        description: 'Rebuild supplied FBCs from the latest production catalogs before creating shipment data.',
                         defaultValue: false,
                     ),
                     booleanParam(
@@ -155,6 +160,9 @@ node {
                 if (params.FORCE) {
                     cmd << "--force"
                 }
+                if (params.REFRESH_FBCS) {
+                    cmd << "--refresh-fbcs"
+                }
                 if (params.TEST_MODE) {
                     cmd << "--test"
                 }
@@ -209,10 +217,12 @@ node {
                         file(credentialsId: 'konflux-bot-0-art-logging-tenant-sa', variable: 'LOGGING_KONFLUX_SA_KUBECONFIG'),
                         file(credentialsId: 'konflux-bot-0-art-oap-tenant-sa', variable: 'OAP_KONFLUX_SA_KUBECONFIG'),
                         file(credentialsId: 'konflux-bot-0-art-quay-tenant-sa', variable: 'QUAY_KONFLUX_SA_KUBECONFIG'),
+                        file(credentialsId: 'konflux-bot-0-art-rhosdt-tenant-sa', variable: 'RHOSDT_KONFLUX_SA_KUBECONFIG'),
                         string(credentialsId: 'art-bot-slack-token', variable: 'SLACK_BOT_TOKEN'),
                         string(credentialsId: 'jira-bot-token', variable: 'JIRA_TOKEN'),
                         string(credentialsId: 'redis-server-password', variable: 'REDIS_SERVER_PASSWORD'),
                         file(credentialsId: 'quay-auth-file', variable: 'QUAY_AUTH_FILE'),
+                        file(credentialsId: 'creds_registry.redhat.io', variable: 'KONFLUX_OPERATOR_INDEX_AUTH_FILE'),
                         file(credentialsId: 'konflux-gcp-app-creds-prod', variable: 'GOOGLE_APPLICATION_CREDENTIALS'),
                         string(credentialsId: 'art-bot-jenkins-gitlab', variable: 'GITLAB_TOKEN'),
                         string(credentialsId: 'openshift-art-build-bot-app-id', variable: 'GITHUB_APP_ID'),

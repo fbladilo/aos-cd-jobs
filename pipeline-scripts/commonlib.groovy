@@ -23,21 +23,56 @@ ocp4Versions = [
 
 // All buildable versions of ocp5
 ocp5Versions = [
+    "5.1",
     "5.0",
-]
-
-
-okdVersions = [
-    "5.0",
-    "4.22",
-    "4.21",
 ]
 
 nonOCPGroups = [
-    "oadp-1.5",
-    "oadp-1.4",
+    "cert-manager-1.19",
+    "external-secrets-1.1",
+    "logging-6.0",
+    "logging-6.2",
+    "logging-6.4",
+    "logging-6.5",
+    "logging-6.6",
+    "logging-6.7",
+    "mta-8.1",
+    "mta-8.2",
+    "mta-8.3",
+    "mtc-1.8",
     "oadp-1.3",
-    "logging-6.3",
+    "oadp-1.4",
+    "oadp-1.5",
+    "oadp-1.6",
+    "zero-trust-1.0",
+    "zero-trust-1.1",
+]
+
+// Additional LP groups from cluster scan schedules.
+LPClusterGroups = [
+    "acm-2.14",
+    "acm-2.15",
+    "acm-2.16",
+    "acm-2.17",
+    "acm-5.0",
+    "coo-1.5",
+    "kueue-1.4",
+    "mce-2.8",
+    "mce-2.9",
+    "mce-2.10",
+    "mce-2.11",
+    "mce-2.17",
+    "mce-5.0",
+    "mirror-gui-1.0",
+    "oc-mirror-2.0",
+    "osus-5.0",
+    "quay-3.9",
+    "quay-3.12",
+    "quay-3.14",
+    "quay-3.16",
+    "quay-3.17",
+    "quay-3.18",
+    "rhosdt-0.158",
 ]
 
 ocpVersions = ocp5Versions + ocp4Versions + ocp3Versions
@@ -146,9 +181,9 @@ def ocpVersionParam(name='MINOR_VERSION', majorVersion='all', extraOpts=[]) {
 def okdVersionParam(name='VERSION', extraOpts=[]) {
     return [
         name: name,
-        description: 'OKD Version',
+        description: 'OKD Version (okd-scan skips versions without okd.enabled in build-data)',
         $class: 'hudson.model.ChoiceParameterDefinition',
-        choices: (extraOpts + okdVersions).join('\n'),
+        choices: (extraOpts + ocp5Versions + ocp4Versions).join('\n'),
     ]
 }
 
@@ -650,6 +685,43 @@ def invalidateAwsCache(s3_path, dry_run=false) {
 
 }
 
+def verifySyncedToMirror(local_dir, s3_path, include_only='') {
+    def filter_args = ''
+    if (include_only) {
+        filter_args = "--exclude '*' --include '${include_only}'"
+    }
+    def s3_out = sh(
+        script: "aws s3 sync --no-progress --size-only --dryrun ${filter_args} ${local_dir} s3://art-srv-enterprise${s3_path}",
+        returnStdout: true
+    ).trim()
+    if (s3_out) {
+        error("S3 post-sync verification failed -- files missing or size mismatch:\n${s3_out}")
+    }
+    sleep(15)
+    def r2_out = sh(
+        script: "aws s3 sync --no-progress --size-only --dryrun ${filter_args} ${local_dir} s3://art-srv-enterprise${s3_path} --profile cloudflare --endpoint-url ${env.CLOUDFLARE_ENDPOINT}",
+        returnStdout: true
+    ).trim()
+    if (r2_out) {
+        // aws s3 sync's dryrun check determines mismatches via ListObjectsV2, whose consistency
+        // on Cloudflare R2 can lag behind the object store itself -- HeadObject/GetObject reflect
+        // the true current state much sooner. Re-check flagged files directly via HeadObject
+        // before failing the build on what may be a stale listing.
+        echo "R2 dryrun flagged inconsistencies, double-checking with HeadObject before failing:\n${r2_out}"
+        writeFile file: '.r2_dryrun_out.txt', text: r2_out
+        def real_mismatches = sh(
+            script: 'bash pipeline-scripts/verify-r2-head-objects.sh .r2_dryrun_out.txt',
+            returnStdout: true
+        ).trim()
+        sh 'rm -f .r2_dryrun_out.txt'
+        if (real_mismatches) {
+            error("R2 post-sync verification failed -- files missing or size mismatch:\n${real_mismatches}")
+        }
+        echo "R2 dryrun mismatch was a stale ListObjectsV2 listing; HeadObject confirms objects are correct."
+    }
+    echo "Verified: all local files present in S3 and R2 for ${s3_path}"
+}
+
 def syncRepoToS3Mirror(local_dir, s3_path, remove_old=true, timeout_minutes=60, issue_cloudfront_invalidation=true, dry_run=false) {
     try {
         checkS3Path(s3_path)
@@ -676,6 +748,9 @@ def syncRepoToS3Mirror(local_dir, s3_path, remove_old=true, timeout_minutes=60, 
                         // 3. Everything should be sync'd in a consistent way -- delete anything old with --delete.
                         shell(script: "aws s3 sync ${opts} --delete ${local_dir} s3://art-srv-enterprise${s3_path}")
                         shell(script: "aws s3 sync ${opts} --delete ${local_dir} s3://art-srv-enterprise${s3_path} --profile cloudflare --endpoint-url ${env.CLOUDFLARE_ENDPOINT}")
+                    }
+                    if (!dry_run) {
+                        verifySyncedToMirror(local_dir, s3_path)
                     }
                 }
             }
@@ -707,6 +782,7 @@ def syncDirToS3Mirror(local_dir, s3_path, delete_old=true, include_only='', time
                 timeout(time: timeout_minutes, unit: 'MINUTES') { // aws s3 sync has been observed to hang before
                     shell(script: "aws s3 sync --no-progress --exact-timestamps ${extra_args} ${local_dir} s3://art-srv-enterprise${s3_path}")
                     shell(script: "aws s3 sync --no-progress --exact-timestamps ${extra_args} ${local_dir} s3://art-srv-enterprise${s3_path} --profile cloudflare --endpoint-url ${env.CLOUDFLARE_ENDPOINT}")
+                    verifySyncedToMirror(local_dir, s3_path, include_only)
                 }
             }
             if (issue_cloudfront_invalidation) {

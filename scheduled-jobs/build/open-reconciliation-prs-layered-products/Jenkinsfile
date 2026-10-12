@@ -1,5 +1,4 @@
 node {
-    timestamps {
     checkout scm
     buildlib = load("pipeline-scripts/buildlib.groovy")
     commonlib = buildlib.commonlib
@@ -21,13 +20,13 @@ node {
     commonlib.checkMock()
     buildlib.init_artcd_working_dir()
 
-    stage("scan") {
+    stage("schedule-open-reconciliation-prs-layered") {
         cmd = [
             "artcd",
             "-v",
             "--working-dir=${WORKSPACE}/artcd_working",
             "--config=./config/artcd.toml",
-            "schedule-oadp-scan",
+            "schedule-open-reconciliation-prs-layered"
         ]
         for ( group in commonlib.nonOCPGroups ) {
             cmd << "--group=${group}"
@@ -46,7 +45,7 @@ node {
                     echo "Will run ${cmd.join(' ')}"
                     sh(script: cmd.join(' '), returnStdout: true)
                 } catch (err) {
-                    slacklib.to("#art-release").failure("Error running oadp_scan", err)
+                    slacklib.to("#art-release").failure("Error running schedule-open-reconciliation-prs-layered", err)
                     throw err
                 } finally {
                     commonlib.safeArchiveArtifacts([
@@ -56,6 +55,5 @@ node {
             }
         }
 
-    }
     }
 }

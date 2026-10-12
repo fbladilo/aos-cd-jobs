@@ -18,6 +18,15 @@ import groovy.json.JsonOutput
     "4-dev-preview-ppc64le": [this.&setDevPreviewLatest],
     "4-dev-preview-arm64": [this.&setDevPreviewLatest],
 
+    "5.1.0-0.nightly":  [this.&startBuildMicroshiftJob, this.&publishRPMsEl9, this.&startRhcosSyncJob],
+    "5.1.0-0.nightly-arm64": [this.&publishRPMsEl9],
+
+    "5.0.0-0.nightly":  [this.&startBuildMicroshiftJob, this.&publishRPMsEl9, this.&startRhcosSyncJob],
+    "5.0.0-0.nightly-arm64": [this.&publishRPMsEl9],
+
+    "4.23.0-0.nightly":  [this.&publishRPMsEl9, this.&startRhcosSyncJob],
+    "4.23.0-0.nightly-arm64": [this.&publishRPMsEl9],
+
     "4.22.0-0.nightly":  [this.&startBuildMicroshiftJob, this.&publishRPMsEl9, this.&publishRPMsEl8, this.&startRhcosSyncJob],
     "4.22.0-0.nightly-arm64": [this.&publishRPMsEl9, this.&publishRPMsEl8],
 
@@ -36,10 +45,6 @@ import groovy.json.JsonOutput
     "4.17.0-0.nightly":  [this.&startBuildMicroshiftJob],
 
     "4.16.0-0.nightly":  [this.&startBuildMicroshiftJob],
-
-    "4.15.0-0.nightly":  [this.&startBuildMicroshiftJob],
-
-    "4.14.0-0.nightly":  [this.&startBuildMicroshiftJob],
 ]
 
 def startRhcosSyncJob(String releaseStream, Map latestRelease, Map previousRelease) {
@@ -63,6 +68,7 @@ def publishRPMsEl9(String releaseStream, Map latestRelease, Map previousRelease)
     def arch = commonlib.extractArchFromReleaseName(latestRelease.name)
     build(
         job: '/aos-cd-builds/build%2Fpublish-rpms',
+        propagate: false,
         parameters: [
             string(name: 'BUILD_VERSION', value: buildVersion),
             string(name: 'ARCH', value: arch),
@@ -76,6 +82,7 @@ def publishRPMsEl8(String releaseStream, Map latestRelease, Map previousRelease)
     def arch = commonlib.extractArchFromReleaseName(latestRelease.name)
     build(
         job: '/aos-cd-builds/build%2Fpublish-rpms',
+        propagate: false,
         parameters: [
             string(name: 'BUILD_VERSION', value: buildVersion),
             string(name: 'ARCH', value: arch),
